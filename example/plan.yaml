@@ -1,0 +1,23 @@
+default:
+  gpg_key: 5A9F0B4F4F8925B3F16C8C7C194BADDA6A85BE8C
+  mailto:
+    - dmoreno@example.com
+
+smtp:
+  hostname: smtp.example.com
+  username: dmoreno@example.com
+  password: password
+  port: 587
+  tls: yes
+
+example.com:
+  auth:
+    user: root
+    become: sudo
+
+  paths:
+    - /etc/
+    - /var/www/
+
+  stdout:
+    database.sql: sudo -u postgres pg_dump database
