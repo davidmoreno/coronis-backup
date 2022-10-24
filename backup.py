@@ -202,7 +202,7 @@ def backup_stdout(host, name, cmd, gpg_key=None, error_codes={}):
         destdir, date, host['host'], name.replace('/', '-'))
     if gpg_key:
         logging.info("[%s] Encrypt with GPG key: %s" % (hostname, gpg_key))
-        genopts = dict(_piped="direct")
+        genopts = dict(_piped=True)
         outfile = outfile+'.gpg'
     else:
         logging.info("[%s] No encryption." % hostname)
@@ -219,8 +219,12 @@ def backup_stdout(host, name, cmd, gpg_key=None, error_codes={}):
                 for x in ('-r', recipient)
             ]
             gpgout = sh.gpg2(
-                gencmd, "-e", *recipients,
-                _out=outfile, _out_bufsize=1024*1024)
+                gencmd, "-e", 
+                *recipients,
+                _out=outfile, 
+                _out_bufsize=1024*1024, 
+                _bg=True
+            )
             gpgout.wait()
             try:
                 ok = (gpgout.exit_code == 0) and (gencmd.exit_code == 0)
