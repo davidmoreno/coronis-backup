@@ -155,7 +155,7 @@ def ssh(host, script, simulate=None, **kwargs):
 
 def warn_strip(hostname):
     def warn(s):
-        logging.warn("[%s] [stderr] %s" % (hostname, s.strip()))
+        logging.warning("[%s] [stderr] %s" % (hostname, s.strip()))
     return warn
 
 
@@ -233,7 +233,7 @@ def backup_stdout(host, name, cmd, gpg_key=None, error_codes={}):
                     ok = False
                     for err, msg in error_codes.items():
                         if gencmd.exit_code == err:
-                            logging.warn(
+                            logging.warning(
                                 "[%s] %s" % (hostname, msg)
                             )
                             ok = True
@@ -246,7 +246,7 @@ def backup_stdout(host, name, cmd, gpg_key=None, error_codes={}):
             ok = False
             for err, msg in error_codes.items():
                 if gencmd.exit_code == err:
-                    logging.warn(
+                    logging.warning(
                         "[%s] %s" % (hostname, msg)
                     )
                     ok = True
@@ -256,9 +256,9 @@ def backup_stdout(host, name, cmd, gpg_key=None, error_codes={}):
             size = os.path.getsize(outfile)
             logging.info("[%s] %s -- %.2f MB" % (hostname, outfile, size / (1024 * 1024.0)))
             if size == 0:
-                logging.warn("[%s] %s is EMPTY!" % (hostname, outfile))
+                logging.warning("[%s] %s is EMPTY!" % (hostname, outfile))
             elif size < 1024:
-                logging.warn("[%s] %s is TOO small! (%s bytes)" % (hostname, outfile, size))
+                logging.warning("[%s] %s is TOO small! (%s bytes)" % (hostname, outfile, size))
         except Exception:
             all_ok = False
             ok = False
