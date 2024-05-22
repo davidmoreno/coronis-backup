@@ -2,8 +2,6 @@
 import logging
 import argparse
 import os
-import subprocess
-import sys
 import traceback
 import pexpect
 import sh
@@ -15,6 +13,13 @@ import yaml
 logger = logging.getLogger("backup-borg")
 
 logging.basicConfig(level=logging.DEBUG)
+
+SSH_ARGS = [
+    "-o",
+    "ControlMaster=no",
+    "-o",
+    "ControlPath=none",
+]
 
 
 class Backup:
@@ -102,9 +107,8 @@ class BackupServer:
             self.setup_remote_borg_envvars()
 
             self.backup_paths()
-        except:
+        finally:
             self.close()
-            raise
         self.logger.info("Backup finished")
 
     def prepare_socat(self):
@@ -132,7 +136,7 @@ class BackupServer:
             "-R",
             f"{self.remote_unix_socket}:{self.local_unix_socket}",
             f"{user}@{server}",
-            "-C",
+            *SSH_ARGS,
             "--",
             *sudo,
             "sh",
@@ -169,6 +173,7 @@ class BackupServer:
         self.remote = remote
 
     def remote_command(self, cmd, timeout=10):
+        self.logger.debug("Executing remote command: %s", cmd)
         self.remote.sendline(cmd)
         self.remote.expect("::PEXPECT:: ", timeout=timeout)
         stdout = self.remote.before
@@ -207,7 +212,6 @@ class BackupServer:
                 self.logger.error("Error backing up %s", path)
 
     def backup_path(self, path):
-        remote = self.remote
         self.logger.info("Backing up %s", path)
         backupname = (
             f"{datetime.datetime.now().strftime('%Y%m%d%H%M')}-{path.replace('/', '-')}"
@@ -223,15 +227,19 @@ class BackupServer:
         except BackupException as exc:
             if "already exists" in str(exc):
                 self.logger.info("Backup already exists")
+            else:
+                raise
 
     def close(self):
-        input("WAITING FOR SOCAT TO CLOSE, PRESS ENTER TO CONTINUE")
+        # input("WAITING FOR SOCAT TO CLOSE, PRESS ENTER TO CONTINUE")
         # close socat
         if self.socat:
+            logger.debug("Closing socat")
             self.socat.close()
             self.socat = None
 
         if self.remote:
+            logger.debug("Closing remote connection")
             self.remote_command(f"rm -f /tmp/{self.name}.sock")
             self.remote.close()
             self.remote = None
@@ -245,8 +253,11 @@ class BackupServer:
 
         self.logger.info(f"Creating repository for %s at %s", self.name, self.path)
         # do not echo password input
+        print()
+        print("Creating new repository:")
+        print()
         password = input(
-            f"Enter password for {self.name}: ",
+            f"Enter password for the repository {self.name}: ",
         )
         ret = sh.borg(
             "init",
@@ -255,6 +266,16 @@ class BackupServer:
             _env={"BORG_PASSPHRASE": password},
         )
         logger.debug("borg init: %s", ret)
+
+        self.connect_to_host()
+
+        logger.debug("Creating password file on remote")
+        self.remote_command("mkdir -p ~/.config/coralbackups")
+        self.remote.sendline("cat > ~/.config/coralbackups/password")
+        self.remote.sendline(password)
+        self.remote.sendeof()
+        self.remote.expect("::PEXPECT:: ", timeout=10)
+        self.remote.close()
 
 
 class BackupException(Exception):
