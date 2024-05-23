@@ -1,17 +1,58 @@
 #!/usr/bin/env python3
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 import json
 import logging
 import argparse
 import os
+import smtplib
 import traceback
+import datetime
 import pexpect
 import sh
-import datetime
 
 import yaml
 
 
+# Custom logger class with multiple destinations
+class ColoredHandlerAndKeep(logging.Handler):
+    LEVEL_TO_COLOR = {
+        0: "\033[0;36m",
+        10: "\033[0;34m",
+        20: "\033[1;m",
+        30: "\033[0;33m",
+        40: "\033[0;31m",
+        50: "\033[1;31m",
+    }
+    RESET = "\033[1;m"
+    FORMAT = "{levelname:5} -- {datetime} -- {color}{message}{reset}"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.keep = []
+
+    def handle(self, record):
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        color = ColoredHandlerAndKeep.LEVEL_TO_COLOR[record.levelno]
+        try:
+            message = record.msg % record.args
+        except Exception:
+            message = record.msg
+        self.keep.append([now, record.levelno, message])
+        print(
+            ColoredHandlerAndKeep.FORMAT.format(
+                color=color,
+                reset=ColoredHandlerAndKeep.RESET,
+                datetime=now,
+                message=message,
+                levelname=record.levelname,
+            )
+        )
+
+
+log_handler = ColoredHandlerAndKeep()
 logger = logging.getLogger("backup-borg")
+# logger.addHandler(log_handler)
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -29,11 +70,15 @@ class Backup:
     tobackup: list
     servers: list[str, dict]
     path: str
+    mailto: list
+    stats: dict
+    smtp: dict
 
     def __init__(self):
         self.parse_args()
         self.parse_yaml()
-        self.plan = None
+        self.stats = {}
+        self.mailto = []
         logger.debug("options: %s", self.options)
         logger.debug("servers: %s", self.servers)
 
@@ -62,19 +107,18 @@ class Backup:
                 logger.error("Server %s not found in configuration", e)
                 exit(1)
         self.path = data["default"]["path"]
+        self.mailto = data["default"]["mailto"]
+        self.smtp = data["smtp"]
 
     def run(self):
         logger.info(f"Running backup with %s at %s", self.options.yamlfile, self.path)
+        self.stats = {}
         for server in self.servers:
             self.backup(server)
-        print()
-        print("STATS:")
-        print("======")
-        print(json.dumps(self.servers, indent=2))
-        # self.send_stats_email()
+        self.send_stats_email()
 
     def backup(self, server: str):
-        BackupServer(
+        self.stats[server] = BackupServer(
             name=server,
             config=self.servers[server],
             path=self.path,
@@ -82,7 +126,12 @@ class Backup:
         ).run()
 
     def send_stats_email(self):
-        email_stats(self.servers)
+        email_stats(
+            mailto=self.mailto,
+            backupname=self.options.yamlfile,
+            stats=self.stats,
+            smtp=self.smtp,
+        )
 
 
 class BackupServer:
@@ -90,9 +139,10 @@ class BackupServer:
     remote = None
     remote_unix_socket = None
     local_unix_socket = None
+    stats: dict
 
     def __init__(self, *, name: str, config: dict, options: dict, path: str):
-        self.logger = logging.getLogger(name)
+        self.logger = logger.getChild(name)
         self.name = name
         self.config = config
         self.path = path
@@ -105,6 +155,7 @@ class BackupServer:
             self.remote_unix_socket,
             self.local_unix_socket,
         )
+        self.stats = {}
 
     def run(self):
         self.logger.info(
@@ -121,6 +172,7 @@ class BackupServer:
         finally:
             self.close()
         self.logger.info("Backup finished")
+        return self.stats
 
     def prepare_socat(self):
         if os.path.exists(self.local_unix_socket):
@@ -183,7 +235,7 @@ class BackupServer:
             return
         self.remote = remote
 
-    def remote_command(self, cmd, timeout=10):
+    def remote_command(self, cmd, timeout=10) -> str:
         self.logger.debug("Executing remote command: %s", cmd)
         self.remote.sendline(cmd)
         self.remote.expect("::PEXPECT:: ", timeout=timeout)
@@ -196,6 +248,8 @@ class BackupServer:
                 "Error in borg command, %s" % self.remote.match.string
             )
         self.remote.expect("::PEXPECT:: ", timeout=10)
+        stdout = stdout[stdout.index("\n") + 1 :]
+
         return stdout
 
     def setup_remote_borg_envvars(self):
@@ -217,7 +271,8 @@ class BackupServer:
         # execute borg command
         for path in self.config["paths"]:
             try:
-                self.backup_path(path)
+                stats = self.backup_path(path)
+                self.stats[path] = stats
             except Exception as e:
                 traceback.print_exc()
                 self.logger.error("Error backing up %s", path)
@@ -231,30 +286,61 @@ class BackupServer:
         backupname = f"{dt}-{basename}"
 
         try:
-            self.remote_command(
-                f"borg create 'ssh://borg-server/{self.path}/{self.name}::{backupname}' '{path}'",
+            info = self.remote_command(
+                f"borg create --json 'ssh://borg-server/{self.path}/{self.name}::{backupname}' '{path}'",
                 timeout=24 * 60 * 60,
             )
+            stats = json.loads(info)["archive"]["stats"]
+            return {
+                **stats,
+                "size": stats["deduplicated_size"],
+                "type": "path",
+                "result": "OK",
+            }
         except BackupException as exc:
             if "already exists" in str(exc):
                 self.logger.info("Backup already exists")
+                return {
+                    "type": "stdout",
+                    "result": "ALREADY EXISTS",
+                }
             else:
-                raise
+                return {
+                    "type": "stdout",
+                    "result": "NOK",
+                }
 
     def backup_stdouts(self):
+        if "stdout" not in self.config:
+            return
         self.remote_command(f"mkdir -p {self.tmpdir}")
         for key, value in self.config["stdout"].items():
-            self.backup_stdout(key, value)
+            stats = self.backup_stdout(key, value)
+            self.stats[key] = stats
 
-        self.backup_path(self.tmpdir, basename="stdout")
+        outputstats = self.backup_path(self.tmpdir, basename="stdout")
+        self.stats["output"] = outputstats
+
         self.remote_command(f"rm -rf {self.tmpdir}")
 
     def backup_stdout(self, key, value):
         try:
-            self.remote_command(f"{value} | gzip > {self.tmpdir}/{key}.gz")
+            self.remote_command(f"{value}  > {self.tmpdir}/{key}")
+            size = self.remote_command(f"stat -c %s {self.tmpdir}/{key}")
+            return {
+                "type": "stdout",
+                "uncompressed_size": int(size),
+                "compressed_size": int(size),
+                "deduplicated_size": 0,
+                "result": "OK",
+                "size": int(size),
+            }
         except:
             self.logger.error("Error backing up stdout %s", key)
-            raise
+            return {
+                "type": "stdout",
+                "result": "NOK",
+            }
 
     def close(self):
         # input("WAITING FOR SOCAT TO CLOSE, PRESS ENTER TO CONTINUE")
@@ -315,6 +401,153 @@ def dict_drop(d, *keys):
             continue
         ret[key] = value
     return ret
+
+
+def pretty_size(size, postfixes=["bytes", "kib", "MiB", "GiB", "TiB"]):
+    if size < 1024:
+        return "%d %s" % (size, postfixes[0])
+    return pretty_size(size / 1024, postfixes[1:])
+
+
+def email_stats(*, smtp: dict, mailto: list[str], backupname: str, stats: dict):
+    """
+    stats is the same format as each server, but with added fields:
+    * size
+    * result
+    * logs
+
+    So for example:
+
+    {
+        "coralbits.com": {
+            "type": "path",
+            "compressed_size": 1234,
+            "uncompressed_size": 1234,
+            "deduplicated_size": 1234,
+        }
+    }
+    """
+    all_ok, htmld = html_table_for_all_hosts(stats)
+
+    title = "Backup %s: %s" % (
+        datetime.date.today(),
+        "Ok" if all_ok else "Error",
+    )
+
+    store_local_file = True
+    send_email = True
+    if store_local_file:
+        filename = "/tmp/" + os.path.basename(backupname)[:-5] + ".html"
+        with open(filename, "w", encoding="utf-8") as fd:
+            fd.write("<h1>%s</h1>%s" % (title, htmld))
+        print("Backup statistics created at file://%s" % os.path.abspath(filename))
+
+    if send_email:
+        for email in mailto:
+            send_email_to(
+                smtp=smtp,
+                backupname=backupname,
+                title=title,
+                htmld=htmld,
+                email=email,
+                all_ok=all_ok,
+            )
+
+
+def send_email_to(*, smtp, backupname, title, htmld, mailto, all_ok):
+    logging.info(
+        "Send email statistics to %s: %s" % (backupname, "OK" if all_ok else "ERROR")
+    )
+    server = smtplib.SMTP(smtp.get("hostname", "localhost"), smtp.get("port", 587))
+    if smtp.get("tls", True):
+        server.starttls()
+    if smtp.get("username"):
+        server.login(smtp.get("username"), smtp.get("password"))
+    msg = MIMEMultipart()
+    msg["From"] = smtp.get("username", "backups")
+    msg["To"] = mailto
+    msg["Subject"] = title
+
+    msg.attach(MIMEText(htmld, "html"))
+
+    server.sendmail(smtp.get("username", "backups"), mailto, msg.as_string())
+    server.quit()
+
+
+def html_table_for_all_hosts(stats):
+    LEVEL_TO_COLOR = {
+        0: "blue",
+        10: "blue",
+        20: "white",
+        30: "#fbbd08",
+        40: "#db2828",
+        50: "#db2828",
+    }
+
+    table = (
+        "<table style='border-collapse: collapse; border: 1px solid #2185d0;'><thead>"
+    )
+    table += "<tr style='background: #2185d0; color:white; '><th>Host</th><th>Area</th>"
+    table += "<th>Item</th><th>Result</th><th>Size</th></tr>"
+    table += "</thead>\n"
+
+    all_ok = True
+    for host, stats in stats.items():
+        all_ok2, ntable = html_table_for_host(host, stats)
+        all_ok = all_ok and all_ok2
+        table += ntable
+
+    table += "</table>"
+
+    htmld = "<div style='font-family: Sans Serif;'>"
+    htmld += (
+        "<div style='padding-bottom: 20px;'>Backup results at %s</div>"
+        % datetime.datetime.now()
+    )
+    htmld += table
+
+    htmld += "<hr><div style='background: #333;'>"
+    for dt, level, line in log_handler.keep:
+        htmld += "<pre style='color: %s; margin: 0;'>%s - %s</pre>\n" % (
+            LEVEL_TO_COLOR[level],
+            dt,
+            line,
+        )
+
+    htmld += "</div></div>"
+
+    return all_ok, htmld
+
+
+def html_table_for_host(host: str, stats: dict):
+    all_ok = True
+    table = ""
+    for path, stats in stats.items():
+        table += "<tr style='border: 1px solid #2185d0;'>"
+        table += "<td style='border: 1px solid #2185d0; padding: 5px;'>%s</td>" % host
+        table += (
+            "<td style='border: 1px solid #2185d0; padding: 5px;'>%s</td>"
+            % stats["type"]
+        )
+        table += "<td style='border: 1px solid #2185d0; padding: 5px;'>%s</td>" % path
+        if stats["result"] == "OK":
+            table += (
+                "<td style='border: 1px solid #2185d0; padding: 5px; background: #21ba45;''>%s</td>"
+                % stats["result"]
+            )
+        else:
+            table += (
+                "<td style='border: 1px solid #2185d0; padding: 5px; background: #db2828;'>%s</td>"
+                % stats["result"]
+            )
+            all_ok = False
+        if "size" in stats and stats["size"] is not None:
+            table += (
+                "<td style='border: 1px solid #2185d0; padding: 5px;'>%s</td>"
+                % pretty_size(stats["size"])
+            )
+        table += "</tr>\n"
+    return all_ok, table
 
 
 if __name__ == "__main__":
