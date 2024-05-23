@@ -75,10 +75,10 @@ class Backup:
     smtp: dict
 
     def __init__(self):
-        self.parse_args()
-        self.parse_yaml()
         self.stats = {}
         self.mailto = []
+        self.parse_args()
+        self.parse_yaml()
         logger.debug("options: %s", self.options)
         logger.debug("servers: %s", self.servers)
 
@@ -89,6 +89,9 @@ class Backup:
             "servernames", nargs="*", help="YAML file with backup configuration"
         )
         args.add_argument("--verbose", action="store_true", help="Verbose output")
+        args.add_argument(
+            "--test-email", action="store_true", help="Send test email with no data"
+        )
 
         self.options = args.parse_args()
 
@@ -111,6 +114,10 @@ class Backup:
         self.smtp = data["smtp"]
 
     def run(self):
+        if self.options.test_email:
+            self.send_stats_email()
+            return
+
         logger.info(f"Running backup with %s at %s", self.options.yamlfile, self.path)
         self.stats = {}
         for server in self.servers:
@@ -429,15 +436,15 @@ def email_stats(*, smtp: dict, mailto: list[str], backupname: str, stats: dict):
     """
     all_ok, htmld = html_table_for_all_hosts(stats)
 
-    title = "Backup %s: %s" % (
-        datetime.date.today(),
-        "Ok" if all_ok else "Error",
-    )
+    date = datetime.date.today()
+    all_ok = "Ok" if all_ok else "Error"
+    backupname = os.path.basename(backupname)[:-5]
+    title = f"Backup {backupname} {date}: {all_ok}"
 
     store_local_file = True
     send_email = True
     if store_local_file:
-        filename = "/tmp/" + os.path.basename(backupname)[:-5] + ".html"
+        filename = f"/tmp/{backupname}.html"
         with open(filename, "w", encoding="utf-8") as fd:
             fd.write("<h1>%s</h1>%s" % (title, htmld))
         print("Backup statistics created at file://%s" % os.path.abspath(filename))
@@ -446,7 +453,6 @@ def email_stats(*, smtp: dict, mailto: list[str], backupname: str, stats: dict):
         for email in mailto:
             send_email_to(
                 smtp=smtp,
-                backupname=backupname,
                 title=title,
                 htmld=htmld,
                 mailto=email,
@@ -454,9 +460,9 @@ def email_stats(*, smtp: dict, mailto: list[str], backupname: str, stats: dict):
             )
 
 
-def send_email_to(*, smtp, backupname, title, htmld, mailto, all_ok):
+def send_email_to(*, smtp, title, htmld, mailto, all_ok):
     logging.info(
-        "Send email statistics to %s: %s" % (backupname, "OK" if all_ok else "ERROR")
+        "Send email statistics to %s: %s" % (mailto, "OK" if all_ok else "ERROR")
     )
     server = smtplib.SMTP(smtp.get("hostname", "localhost"), smtp.get("port", 587))
     if smtp.get("tls", True):
