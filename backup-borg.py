@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import logging
 import argparse
 import os
@@ -66,6 +67,11 @@ class Backup:
         logger.info(f"Running backup with %s at %s", self.options.yamlfile, self.path)
         for server in self.servers:
             self.backup(server)
+        print()
+        print("STATS:")
+        print("======")
+        print(json.dumps(self.servers, indent=2))
+        # self.send_stats_email()
 
     def backup(self, server: str):
         BackupServer(
@@ -74,6 +80,9 @@ class Backup:
             path=self.path,
             options=self.options,
         ).run()
+
+    def send_stats_email(self):
+        email_stats(self.servers)
 
 
 class BackupServer:
@@ -90,6 +99,7 @@ class BackupServer:
         self.options = options
         self.remote_unix_socket = f"/tmp/{self.name}.sock"
         self.local_unix_socket = f"{self.path}/{self.name}.sock"
+        self.tmpdir = "/tmp/coralbackups/"
         self.logger.debug(
             "Remote unix socket: %s <-> %s",
             self.remote_unix_socket,
@@ -107,6 +117,7 @@ class BackupServer:
             self.setup_remote_borg_envvars()
 
             self.backup_paths()
+            self.backup_stdouts()
         finally:
             self.close()
         self.logger.info("Backup finished")
@@ -211,13 +222,13 @@ class BackupServer:
                 traceback.print_exc()
                 self.logger.error("Error backing up %s", path)
 
-    def backup_path(self, path):
+    def backup_path(self, path: str, *, basename: str = None):
         self.logger.info("Backing up %s", path)
-        backupname = (
-            f"{datetime.datetime.now().strftime('%Y%m%d%H%M')}-{path.replace('/', '-')}"
-        )
-        while backupname.endswith("-"):
-            backupname = backupname[:-1]
+        if not basename:
+            basename = path.replace("/", "-").strip("-")
+        dt = datetime.datetime.now().strftime("%Y%m%d%H%M")
+
+        backupname = f"{dt}-{basename}"
 
         try:
             self.remote_command(
@@ -229,6 +240,21 @@ class BackupServer:
                 self.logger.info("Backup already exists")
             else:
                 raise
+
+    def backup_stdouts(self):
+        self.remote_command(f"mkdir -p {self.tmpdir}")
+        for key, value in self.config["stdout"].items():
+            self.backup_stdout(key, value)
+
+        self.backup_path(self.tmpdir, basename="stdout")
+        self.remote_command(f"rm -rf {self.tmpdir}")
+
+    def backup_stdout(self, key, value):
+        try:
+            self.remote_command(f"{value} | gzip > {self.tmpdir}/{key}.gz")
+        except:
+            self.logger.error("Error backing up stdout %s", key)
+            raise
 
     def close(self):
         # input("WAITING FOR SOCAT TO CLOSE, PRESS ENTER TO CONTINUE")
