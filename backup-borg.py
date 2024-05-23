@@ -449,7 +449,7 @@ def email_stats(*, smtp: dict, mailto: list[str], backupname: str, stats: dict):
                 backupname=backupname,
                 title=title,
                 htmld=htmld,
-                email=email,
+                mailto=email,
                 all_ok=all_ok,
             )
 
