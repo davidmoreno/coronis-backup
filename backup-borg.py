@@ -10,6 +10,7 @@ import traceback
 import datetime
 import pexpect
 import sh
+import uuid
 
 import yaml
 
@@ -157,7 +158,7 @@ class BackupServer:
         self.config = config
         self.path = path
         self.options = options
-        self.remote_unix_socket = f"/tmp/{self.name}.sock"
+        self.remote_unix_socket = f"/tmp/{self.name}-{uuid.uuid4()}.sock"
         self.local_unix_socket = f"{self.path}/{self.name}.sock"
         self.tmpdir = "/tmp/coralbackups/"
         self.logger.debug(
@@ -269,7 +270,7 @@ class BackupServer:
     def setup_remote_borg_envvars(self):
         # ensure socket exists
         try:
-            self.remote_command(f"test -e /tmp/{self.name}.sock")
+            self.remote_command(f"test -e {self.remote_unix_socket}")
         except BackupException:
             self.logger.error("Socket not created!")
             raise
@@ -327,19 +328,29 @@ class BackupServer:
     def backup_stdouts(self):
         if "stdout" not in self.config:
             return
-        self.remote_command(f"mkdir -p {self.tmpdir}")
-        for key, value in self.config["stdout"].items():
-            stats = self.backup_stdout(key, value)
-            self.stats[key] = stats
+        try:
+            self.remote_command(f"mkdir -p {self.tmpdir}")
+            
+            for key, value in self.config["stdout"].items():
+                stats = self.backup_stdout(key, value)
+                self.stats[key] = stats
 
-        outputstats = self.backup_path(self.tmpdir, basename="stdout")
-        self.stats["output"] = outputstats
+            outputstats = self.backup_path(self.tmpdir, basename="stdout")
+            self.stats["output"] = outputstats
 
-        self.remote_command(f"rm -rf {self.tmpdir}")
+            self.remote_command(f"rm -rf {self.tmpdir}")
+        except:
+            import traceback
+            traceback.print_exc()
+            self.stats["output"] = {
+                    "type": "output",
+                    "result": "NOK",
+            }
+
 
     def backup_stdout(self, key, value):
         try:
-            self.remote_command(f"{value}  > {self.tmpdir}/{key}")
+            self.remote_command(f"{value}  > {self.tmpdir}/{key}", timeout=25*60*60)
             size = self.remote_command(f"stat -c %s {self.tmpdir}/{key}")
             return {
                 "type": "stdout",
@@ -366,7 +377,7 @@ class BackupServer:
 
         if self.remote:
             logger.debug("Closing remote connection")
-            self.remote_command(f"rm -f /tmp/{self.name}.sock")
+            self.remote_command(f"rm -f {self.remote_unix_socket}")
             self.remote.close()
             self.remote = None
 
