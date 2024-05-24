@@ -73,8 +73,10 @@ class Backup:
     mailto: list
     stats: dict
     smtp: dict
+    start_time: datetime.datetime
 
     def __init__(self):
+        self.start_time = datetime.datetime.now()
         self.stats = {}
         self.mailto = []
         self.parse_args()
@@ -138,6 +140,7 @@ class Backup:
             backupname=self.options.yamlfile,
             stats=self.stats,
             smtp=self.smtp,
+            total_time=datetime.datetime.now() - self.start_time,
         )
 
 
@@ -176,6 +179,10 @@ class BackupServer:
 
             self.backup_paths()
             self.backup_stdouts()
+        except Exception as e:
+            traceback.print_exc()
+            self.logger.error("Error in backup: %s", e)
+            return self.stats
         finally:
             self.close()
         self.logger.info("Backup finished")
@@ -416,7 +423,14 @@ def pretty_size(size, postfixes=["bytes", "kib", "MiB", "GiB", "TiB"]):
     return pretty_size(size / 1024, postfixes[1:])
 
 
-def email_stats(*, smtp: dict, mailto: list[str], backupname: str, stats: dict):
+def email_stats(
+    *,
+    smtp: dict,
+    mailto: list[str],
+    backupname: str,
+    stats: dict,
+    total_time: datetime.timedelta,
+):
     """
     stats is the same format as each server, but with added fields:
     * size
@@ -436,10 +450,12 @@ def email_stats(*, smtp: dict, mailto: list[str], backupname: str, stats: dict):
     """
     all_ok, htmld = html_table_for_all_hosts(stats)
 
+    htmld = f"<div>Total time: {total_time}</div>{htmld}"
+
     date = datetime.date.today()
-    all_ok = "Ok" if all_ok else "Error"
+    all_ok_str = "Ok" if all_ok else "Error"
     backupname = os.path.basename(backupname)[:-5]
-    title = f"Backup {backupname} {date}: {all_ok}"
+    title = f"{all_ok_str} backup {backupname} {date}"
 
     store_local_file = True
     send_email = True
