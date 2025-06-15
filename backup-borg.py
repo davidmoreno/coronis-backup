@@ -173,21 +173,46 @@ class BackupServer:
             f"Running backup for: %s with config: %s", self.name, self.config
         )
         try:
+            self.prepare_stats()
+
             self.ensure_repository()
             self.prepare_socat()
             self.connect_to_host()
             self.setup_remote_borg_envvars()
 
-            self.backup_paths()
-            self.backup_stdouts()
+            try:
+                self.backup_paths()
+            except Exception as e:
+                self.logger.error("Error in backup paths: %s", e)
+            try:
+                self.backup_stdouts()
+            except Exception as e:
+                self.logger.error("Error in backup stdouts: %s", e)
         except Exception as e:
             traceback.print_exc()
             self.logger.error("Error in backup: %s", e)
-            return self.stats
         finally:
             self.close()
-        self.logger.info("Backup finished")
+        self.logger.info("Backup finished: %s", self.stats)
         return self.stats
+
+    def prepare_stats(self):
+        for path in self.config.get("paths", []):
+            self.stats[path] = {
+                "type": "path",
+                "compressed_size": 0,
+                "uncompressed_size": 0,
+                "deduplicated_size": 0,
+                "result": "NOK",
+            }
+        for key, value in self.config.get("stdout", {}).items():
+            self.stats[key] = {
+                "type": "stdout",
+                "compressed_size": 0,
+                "uncompressed_size": 0,
+                "deduplicated_size": 0,
+                "result": "NOK",
+            }
 
     def prepare_socat(self):
         if os.path.exists(self.local_unix_socket):
@@ -330,7 +355,7 @@ class BackupServer:
             return
         try:
             self.remote_command(f"mkdir -p {self.tmpdir}")
-            
+
             for key, value in self.config["stdout"].items():
                 stats = self.backup_stdout(key, value)
                 self.stats[key] = stats
@@ -341,16 +366,16 @@ class BackupServer:
             self.remote_command(f"rm -rf {self.tmpdir}")
         except:
             import traceback
+
             traceback.print_exc()
             self.stats["output"] = {
-                    "type": "output",
-                    "result": "NOK",
+                "type": "output",
+                "result": "NOK",
             }
-
 
     def backup_stdout(self, key, value):
         try:
-            self.remote_command(f"{value}  > {self.tmpdir}/{key}", timeout=25*60*60)
+            self.remote_command(f"{value}  > {self.tmpdir}/{key}", timeout=25 * 60 * 60)
             size = self.remote_command(f"stat -c %s {self.tmpdir}/{key}")
             return {
                 "type": "stdout",
