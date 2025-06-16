@@ -16,7 +16,7 @@ VERSION = '0.1'
 
 # set to true, to only print actions
 simulate = False
-date = datetime.datetime.now().strftime("%Y%m%d")
+date = datetime.datetime.now().strftime("%Y/%m/%d")
 destdir = None
 incremental = False
 all_ok = True
@@ -198,8 +198,9 @@ def backup(host, path, gpg_key=None):
 def backup_stdout(host, name, cmd, gpg_key=None, error_codes={}):
     global all_ok
     hostname = host["host"]
-    outfile = "%s/%s-%s-%s" % (
+    outfile = "%s/%s/%s/%s" % (
         destdir, date, host['host'], name.replace('/', '-'))
+    os.makedirs(os.path.dirname(outfile), exist_ok=True)
     if gpg_key:
         logging.info("[%s] Encrypt with GPG key: %s" % (hostname, gpg_key))
         genopts = dict(_piped=True)
