@@ -564,6 +564,15 @@ def create_logs_section():
     logs_html += f"<div style='{EMAIL_STYLES['logs_box']}'>"
     logs_html += f"<pre style='{EMAIL_STYLES['logs_text']}'>"
 
+    # Keywords that might indicate password content
+    password_indicators = [
+        "password",
+        "passphrase",
+        "secret",
+        "key",
+        "token",
+    ]
+
     for dt, level, line in log_handler.keep:
         # Add HR before "Running backup for:" lines
         if "Running backup for:" in line:
@@ -571,8 +580,16 @@ def create_logs_section():
                 "<hr style='border: 0; border-top: 1px solid #ddd; margin: 10px 0;'>"
             )
 
+        # Check for password mentions and mask them
+        masked_line = line
+        for indicator in password_indicators:
+            if indicator.lower() in line.lower():
+                # Mask the entire line if it contains password-related content
+                masked_line = "[PASSWORD CONTENT REDACTED]"
+                break
+
         level_name = logging.getLevelName(level)
-        logs_html += f"<span style='color: {LOG_COLORS[level]};'>{dt} [{level_name}] {line}</span>\n"
+        logs_html += f"<span style='color: {LOG_COLORS[level]};'>{dt} [{level_name}] {masked_line}</span>\n"
 
     logs_html += "</pre></div></div>"
     return logs_html
