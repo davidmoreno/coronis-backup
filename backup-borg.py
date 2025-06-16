@@ -17,13 +17,14 @@ import yaml
 
 # Custom logger class with multiple destinations
 class ColoredHandlerAndKeep(logging.Handler):
+    # ANSI colors for console output
     LEVEL_TO_COLOR = {
-        0: "\033[0;36m",
-        10: "\033[0;34m",
-        20: "\033[1;m",
-        30: "\033[0;33m",
-        40: "\033[0;31m",
-        50: "\033[1;31m",
+        0: "\033[0;36m",  # DEBUG - Cyan
+        10: "\033[0;34m",  # INFO - Blue
+        20: "\033[1;m",  # WARNING - Bold
+        30: "\033[0;33m",  # ERROR - Yellow
+        40: "\033[0;31m",  # CRITICAL - Red
+        50: "\033[1;31m",  # FATAL - Bold Red
     }
     RESET = "\033[1;m"
     FORMAT = "{levelname:5} -- {datetime} -- {color}{message}{reset}"
@@ -51,11 +52,35 @@ class ColoredHandlerAndKeep(logging.Handler):
         )
 
 
+# HTML colors for email output
+LOG_COLORS = {
+    # Using a color palette with good contrast ratios
+    10: "#3AAFA9",  # DEBUG - Teal
+    20: "#6B5B95",  # INFO - Purple
+    30: "#F39C12",  # WARNING - Orange
+    40: "#E74C3C",  # ERROR - Red
+    50: "#C0392B",  # CRITICAL - Dark Red
+}
+
+# Email styling constants
+EMAIL_STYLES = {
+    "container": "font-family: Sans Serif;",
+    "header": "padding-bottom: 20px;",
+    "table": "border-collapse: collapse; border: 1px solid #2185d0;",
+    "table_header": "background: #2185d0; color: white;",
+    "table_cell": "border: 1px solid #2185d0; padding: 5px;",
+    "success_cell": "background: #21ba45;",
+    "error_cell": "background: #db2828;",
+    "logs_container": "margin-top: 20px;",
+    "logs_header": "color: #2185d0;",
+    "logs_box": "background: #f8f9fa; padding: 15px; border-radius: 5px;",
+    "logs_text": "margin: 0; font-family: monospace;",
+}
+
 log_handler = ColoredHandlerAndKeep()
 logger = logging.getLogger("backup-borg")
-# logger.addHandler(log_handler)
-
-logging.basicConfig(level=logging.DEBUG)
+logger.addHandler(log_handler)
+logger.setLevel(logging.DEBUG)  # Ensure we capture all log levels
 
 SSH_ARGS = [
     "-o",
@@ -532,47 +557,58 @@ def send_email_to(*, smtp, title, htmld, mailto, all_ok):
     server.quit()
 
 
-def html_table_for_all_hosts(stats):
-    LEVEL_TO_COLOR = {
-        0: "blue",
-        10: "blue",
-        20: "white",
-        30: "#fbbd08",
-        40: "#db2828",
-        50: "#db2828",
-    }
+def create_logs_section():
+    """Creates the HTML section with detailed logs."""
+    logs_html = f"<hr><div style='{EMAIL_STYLES['logs_container']}'>"
+    logs_html += f"<h3 style='{EMAIL_STYLES['logs_header']}'>Detailed Logs</h3>"
+    logs_html += f"<div style='{EMAIL_STYLES['logs_box']}'>"
+    logs_html += f"<pre style='{EMAIL_STYLES['logs_text']}'>"
 
-    table = (
-        "<table style='border-collapse: collapse; border: 1px solid #2185d0;'><thead>"
-    )
-    table += "<tr style='background: #2185d0; color:white; '><th>Host</th><th>Area</th>"
+    for dt, level, line in log_handler.keep:
+        # Add HR before "Running backup for:" lines
+        if "Running backup for:" in line:
+            logs_html += (
+                "<hr style='border: 0; border-top: 1px solid #ddd; margin: 10px 0;'>"
+            )
+
+        level_name = logging.getLevelName(level)
+        logs_html += f"<span style='color: {LOG_COLORS[level]};'>{dt} [{level_name}] {line}</span>\n"
+
+    logs_html += "</pre></div></div>"
+    return logs_html
+
+
+def create_stats_table(stats):
+    """Creates the HTML table with backup statistics."""
+    table = f"<table style='{EMAIL_STYLES['table']}'><thead>"
+    table += f"<tr style='{EMAIL_STYLES['table_header']}'><th>Host</th><th>Area</th>"
     table += "<th>Item</th><th>Result</th><th>Size</th></tr>"
     table += "</thead>\n"
 
     all_ok = True
-    for host, stats in stats.items():
-        all_ok2, ntable = html_table_for_host(host, stats)
+    for host, host_stats in stats.items():
+        all_ok2, ntable = html_table_for_host(host, host_stats)
         all_ok = all_ok and all_ok2
         table += ntable
 
     table += "</table>"
+    return all_ok, table
 
-    htmld = "<div style='font-family: Sans Serif;'>"
-    htmld += (
-        "<div style='padding-bottom: 20px;'>Backup results at %s</div>"
-        % datetime.datetime.now()
-    )
+
+def create_email_header():
+    """Creates the header section of the email."""
+    return f"<div style='{EMAIL_STYLES['header']}'>Backup results at {datetime.datetime.now()}</div>"
+
+
+def html_table_for_all_hosts(stats):
+    """Main function to generate the complete HTML email content."""
+    all_ok, table = create_stats_table(stats)
+
+    htmld = f"<div style='{EMAIL_STYLES['container']}'>"
+    htmld += create_email_header()
     htmld += table
-
-    htmld += "<hr><div style='background: #333;'>"
-    for dt, level, line in log_handler.keep:
-        htmld += "<pre style='color: %s; margin: 0;'>%s - %s</pre>\n" % (
-            LEVEL_TO_COLOR[level],
-            dt,
-            line,
-        )
-
-    htmld += "</div></div>"
+    htmld += create_logs_section()
+    htmld += "</div>"
 
     return all_ok, htmld
 
@@ -581,29 +617,17 @@ def html_table_for_host(host: str, stats: dict):
     all_ok = True
     table = ""
     for path, stats in stats.items():
-        table += "<tr style='border: 1px solid #2185d0;'>"
-        table += "<td style='border: 1px solid #2185d0; padding: 5px;'>%s</td>" % host
-        table += (
-            "<td style='border: 1px solid #2185d0; padding: 5px;'>%s</td>"
-            % stats["type"]
-        )
-        table += "<td style='border: 1px solid #2185d0; padding: 5px;'>%s</td>" % path
+        table += f"<tr style='{EMAIL_STYLES['table_cell']}'>"
+        table += f"<td style='{EMAIL_STYLES['table_cell']}'>{host}</td>"
+        table += f"<td style='{EMAIL_STYLES['table_cell']}'>{stats['type']}</td>"
+        table += f"<td style='{EMAIL_STYLES['table_cell']}'>{path}</td>"
         if stats["result"] == "OK":
-            table += (
-                "<td style='border: 1px solid #2185d0; padding: 5px; background: #21ba45;''>%s</td>"
-                % stats["result"]
-            )
+            table += f"<td style='{EMAIL_STYLES['table_cell']} {EMAIL_STYLES['success_cell']}'>{stats['result']}</td>"
         else:
-            table += (
-                "<td style='border: 1px solid #2185d0; padding: 5px; background: #db2828;'>%s</td>"
-                % stats["result"]
-            )
+            table += f"<td style='{EMAIL_STYLES['table_cell']} {EMAIL_STYLES['error_cell']}'>{stats['result']}</td>"
             all_ok = False
         if "size" in stats and stats["size"] is not None:
-            table += (
-                "<td style='border: 1px solid #2185d0; padding: 5px;'>%s</td>"
-                % pretty_size(stats["size"])
-            )
+            table += f"<td style='{EMAIL_STYLES['table_cell']}'>{pretty_size(stats['size'])}</td>"
         table += "</tr>\n"
     return all_ok, table
 
