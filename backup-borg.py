@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+"""
+AGPLv3
+
+Copyright (C) 2020-2025  Coralbits
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+"""
+
+
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import json
