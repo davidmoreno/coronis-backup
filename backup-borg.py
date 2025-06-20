@@ -8,6 +8,8 @@ This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published
 by the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
+
+https://github.com/davidmoreno/coronis-backup
 """
 
 
@@ -206,11 +208,6 @@ class BackupServer:
         self.remote_unix_socket = f"/tmp/{self.name}-{uuid.uuid4()}.sock"
         self.local_unix_socket = f"{self.path}/{self.name}.sock"
         self.tmpdir = "/tmp/coralbackups/"
-        self.logger.debug(
-            "Remote unix socket: %s <-> %s",
-            self.remote_unix_socket,
-            self.local_unix_socket,
-        )
         self.stats = {}
 
     def run(self):
@@ -260,6 +257,7 @@ class BackupServer:
             }
 
     def prepare_socat(self):
+        assert not self.socat, "Socat already prepared"
         if os.path.exists(self.local_unix_socket):
             os.unlink(self.local_unix_socket)
         # I need a system background process for socat that I will close at close
@@ -271,18 +269,28 @@ class BackupServer:
         ]
 
         self.socat = pexpect.spawn(socatcmd[0], socatcmd[1:], encoding="utf-8")
+        logger.info("Started local socat: %s", " ".join(socatcmd))
 
-    def connect_to_host(self):
+    def connect_to_host(self, with_unix_socket: bool = True):
         user = self.config["auth"]["user"]
         server = self.name
         sudo = []
         if "become" in self.config["auth"]:
             sudo = self.config["auth"]["become"].split(" ")
 
+        if with_unix_socket:
+            options = ["-R", f"{self.remote_unix_socket}:{self.local_unix_socket}"]
+            self.logger.debug(
+                "Remote unix socket: %s <-> %s",
+                self.remote_unix_socket,
+                self.local_unix_socket,
+            )
+        else:
+            options = []
+
         cmd = [
             "ssh",
-            "-R",
-            f"{self.remote_unix_socket}:{self.local_unix_socket}",
+            *options,
             f"{user}@{server}",
             *SSH_ARGS,
             "--",
@@ -319,6 +327,10 @@ class BackupServer:
             self.logger.error("Could not connect to %s", server)
             return
         self.remote = remote
+
+    def disconnect_from_host(self):
+        self.remote.close()
+        self.remote = None
 
     def remote_command(self, cmd, timeout=10) -> str:
         self.logger.debug("Executing remote command: %s", cmd)
@@ -458,31 +470,47 @@ class BackupServer:
         if os.path.exists(f"{self.path}/{self.name}"):
             return
 
-        self.logger.info(f"Creating repository for %s at %s", self.name, self.path)
-        # do not echo password input
-        print()
-        print("Creating new repository:")
-        print()
-        password = input(
-            f"Enter password for the repository {self.name}: ",
-        )
-        ret = sh.borg(
+        self.connect_to_host(with_unix_socket=False)
+        password = self.get_remote_password()
+
+        logger.info("Creating local repository at %s/%s", self.path, self.name)
+
+        if password:
+            logger.info("Reusing password from remote")
+        if not password:
+            self.logger.info(f"Creating repository for %s at %s", self.name, self.path)
+            # do not echo password input
+            print()
+            print("Creating new repository:")
+            print()
+            password = input(
+                f"Enter password for the repository {self.name}: ",
+            )
+
+            logger.debug("Creating password file on remote")
+            self.remote_command("mkdir -p ~/.config/coralbackups")
+            self.remote.sendline("cat > ~/.config/coralbackups/password")
+            self.remote.sendline(password)
+            self.remote.sendeof()
+            self.remote.expect("::PEXPECT:: ", timeout=10)
+
+        password = password.strip()
+        # logger.debug("Repository password: %s", password)
+
+        sh.borg(
             "init",
             "--encryption=repokey",
             f"{self.path}/{self.name}",
             _env={"BORG_PASSPHRASE": password},
         )
-        logger.debug("borg init: %s", ret)
+        self.disconnect_from_host()
+        logger.info("Repository created")
 
-        self.connect_to_host()
-
-        logger.debug("Creating password file on remote")
-        self.remote_command("mkdir -p ~/.config/coralbackups")
-        self.remote.sendline("cat > ~/.config/coralbackups/password")
-        self.remote.sendline(password)
-        self.remote.sendeof()
-        self.remote.expect("::PEXPECT:: ", timeout=10)
-        self.remote.close()
+    def get_remote_password(self):
+        try:
+            return self.remote_command("cat ~/.config/coralbackups/password")
+        except BackupException:
+            return None
 
 
 class BackupException(Exception):
