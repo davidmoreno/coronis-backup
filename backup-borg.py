@@ -132,6 +132,9 @@ class Backup:
         args.add_argument(
             "--test-email", action="store_true", help="Send test email with no data"
         )
+        args.add_argument(
+            "--no-email", action="store_true", help="Disable email sending"
+        )
 
         self.options = args.parse_args()
 
@@ -155,14 +158,18 @@ class Backup:
 
     def run(self):
         if self.options.test_email:
-            self.send_stats_email()
+            if not self.options.no_email:
+                self.send_stats_email()
             return
 
         logger.info(f"Running backup with %s at %s", self.options.yamlfile, self.path)
         self.stats = {}
         for server in self.servers:
             self.backup(server)
-        self.send_stats_email()
+        if not self.options.no_email:
+            self.send_stats_email()
+        else:
+            logger.info("Email sending disabled with --no-email parameter")
 
     def backup(self, server: str):
         self.stats[server] = BackupServer(
@@ -179,6 +186,7 @@ class Backup:
             stats=self.stats,
             smtp=self.smtp,
             total_time=datetime.datetime.now() - self.start_time,
+            send_email=not self.options.no_email,
         )
 
 
@@ -503,6 +511,7 @@ def email_stats(
     backupname: str,
     stats: dict,
     total_time: datetime.timedelta,
+    send_email: bool = True,
 ):
     """
     stats is the same format as each server, but with added fields:
@@ -531,7 +540,6 @@ def email_stats(
     title = f"{all_ok_str} backup {backupname} {date}"
 
     store_local_file = True
-    send_email = True
     if store_local_file:
         filename = f"/tmp/{backupname}.html"
         with open(filename, "w", encoding="utf-8") as fd:
