@@ -247,7 +247,7 @@ class BackupServer:
                 "compressed_size": 0,
                 "uncompressed_size": 0,
                 "deduplicated_size": 0,
-                "result": "NOK",
+                "result": "NOK_DEF",
             }
         for key, value in self.config.get("stdout", {}).items():
             self.stats[key] = {
@@ -255,7 +255,7 @@ class BackupServer:
                 "compressed_size": 0,
                 "uncompressed_size": 0,
                 "deduplicated_size": 0,
-                "result": "NOK",
+                "result": "NOK_DEF",
             }
 
     def prepare_socat(self):
@@ -394,13 +394,13 @@ class BackupServer:
                 self.logger.error("Error parsing JSON: %s", info)
                 return {
                     "type": "path",
-                    "result": "NOK",
+                    "result": "NOK_JSON",
                 }
             return {
                 **stats,
                 "size": stats["deduplicated_size"],
                 "type": "path",
-                "result": "OK" if exit_code == "0" else "NOK",
+                "result": "OK" if exit_code == "0" else "NOK_EXIT",
             }
         except BackupException as exc:
             if "already exists" in str(exc):
@@ -412,7 +412,7 @@ class BackupServer:
             else:
                 return {
                     "type": "stdout",
-                    "result": "NOK",
+                    "result": "NOK_EXCEPTION",
                 }
 
     def backup_stdouts(self):
@@ -435,7 +435,7 @@ class BackupServer:
             traceback.print_exc()
             self.stats["output"] = {
                 "type": "output",
-                "result": "NOK",
+                "result": "NOK_EXCEPTION",
             }
 
     def backup_stdout(self, key, value):
@@ -447,14 +447,14 @@ class BackupServer:
             self.logger.error("Error parsing size: %s", size)
             return {
                 "type": "stdout",
-                "result": "NOK",
+                "result": "NOK_VALUE",
             }
         return {
             "type": "stdout",
             "uncompressed_size": int_size,
             "compressed_size": int_size,
             "deduplicated_size": 0,
-            "result": "OK" if exit_code == "0" else "NOK",
+            "result": "OK" if exit_code == "0" else "NOK_EXIT",
             "size": int_size,
         }
 
