@@ -389,6 +389,9 @@ class BackupServer:
                 # allow any exit code
             )
             try:
+                # info may contain some other suff, we get from first { to last }, ignoring everything else, and multiline
+                info = info[info.index("{") : info.rindex("}") + 1]
+
                 stats = json.loads(info)["archive"]["stats"]
             except json.JSONDecodeError:
                 self.logger.error("Error parsing JSON: %s", info)
