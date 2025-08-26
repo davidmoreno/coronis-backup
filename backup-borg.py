@@ -13,19 +13,19 @@ https://github.com/davidmoreno/coronis-backup
 """
 
 
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import argparse
+import datetime
 import json
 import logging
-import argparse
 import os
 import smtplib
 import traceback
-import datetime
+import uuid
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
 import pexpect
 import sh
-import uuid
-
 import yaml
 
 
@@ -171,7 +171,7 @@ class Backup:
         if not self.options.no_email:
             self.send_stats_email()
         else:
-            logger.info("Email sending disabled with --no-email parameter")
+            self.send_stats_email(send_email=False)
 
     def backup(self, server: str):
         self.stats[server] = BackupServer(
@@ -181,14 +181,16 @@ class Backup:
             options=self.options,
         ).run()
 
-    def send_stats_email(self):
+    def send_stats_email(self, *, send_email: bool = None):
+        if send_email is None:
+            send_email = not self.options.no_email
         email_stats(
             mailto=self.mailto,
             backupname=self.options.yamlfile,
             stats=self.stats,
             smtp=self.smtp,
             total_time=datetime.datetime.now() - self.start_time,
-            send_email=not self.options.no_email,
+            send_email=send_email,
         )
 
 
@@ -332,22 +334,20 @@ class BackupServer:
         self.remote.close()
         self.remote = None
 
-    def remote_command(self, cmd, timeout=10) -> str:
+    def remote_command(self, cmd, timeout=10) -> tuple[str, str]:
         self.logger.debug("Executing remote command: %s", cmd)
         self.remote.sendline(cmd)
         self.remote.expect("::PEXPECT:: ", timeout=timeout)
         stdout = self.remote.before
         self.remote.sendline("echo ERROR CODE $?")
         self.remote.expect(r"ERROR CODE (\d+)", timeout=10)
-        if self.remote.match.group(1) != "0":
+        exit_code = self.remote.match.group(1)
+        if exit_code != "0":
             self.logger.error("Error in command: \n%s", stdout)
-            raise BackupException(
-                "Error in borg command, %s" % self.remote.match.string
-            )
         self.remote.expect("::PEXPECT:: ", timeout=10)
         stdout = stdout[stdout.index("\n") + 1 :]
 
-        return stdout
+        return stdout, exit_code
 
     def setup_remote_borg_envvars(self):
         # ensure socket exists
@@ -383,16 +383,24 @@ class BackupServer:
         backupname = f"{dt}-{basename}"
 
         try:
-            info = self.remote_command(
+            info, exit_code = self.remote_command(
                 f"borg create --json 'ssh://borg-server/{self.path}/{self.name}::{backupname}' '{path}'",
                 timeout=24 * 60 * 60,
+                # allow any exit code
             )
-            stats = json.loads(info)["archive"]["stats"]
+            try:
+                stats = json.loads(info)["archive"]["stats"]
+            except json.JSONDecodeError:
+                self.logger.error("Error parsing JSON: %s", info)
+                return {
+                    "type": "path",
+                    "result": "NOK",
+                }
             return {
                 **stats,
                 "size": stats["deduplicated_size"],
                 "type": "path",
-                "result": "OK",
+                "result": "OK" if exit_code == "0" else "NOK",
             }
         except BackupException as exc:
             if "already exists" in str(exc):
@@ -431,23 +439,24 @@ class BackupServer:
             }
 
     def backup_stdout(self, key, value):
+        self.remote_command(f"{value}  > {self.tmpdir}/{key}", timeout=25 * 60 * 60)
+        size, exit_code = self.remote_command(f"stat -c %s {self.tmpdir}/{key}")
         try:
-            self.remote_command(f"{value}  > {self.tmpdir}/{key}", timeout=25 * 60 * 60)
-            size = self.remote_command(f"stat -c %s {self.tmpdir}/{key}")
-            return {
-                "type": "stdout",
-                "uncompressed_size": int(size),
-                "compressed_size": int(size),
-                "deduplicated_size": 0,
-                "result": "OK",
-                "size": int(size),
-            }
-        except:
-            self.logger.error("Error backing up stdout %s", key)
+            int_size = int(size)
+        except ValueError:
+            self.logger.error("Error parsing size: %s", size)
             return {
                 "type": "stdout",
                 "result": "NOK",
             }
+        return {
+            "type": "stdout",
+            "uncompressed_size": int_size,
+            "compressed_size": int_size,
+            "deduplicated_size": 0,
+            "result": "OK" if exit_code == "0" else "NOK",
+            "size": int_size,
+        }
 
     def close(self):
         # input("WAITING FOR SOCAT TO CLOSE, PRESS ENTER TO CONTINUE")
@@ -507,10 +516,12 @@ class BackupServer:
         logger.info("Repository created")
 
     def get_remote_password(self):
-        try:
-            return self.remote_command("cat ~/.config/coralbackups/password")
-        except BackupException:
+        password, exit_code = self.remote_command(
+            "cat ~/.config/coralbackups/password", timeout=60
+        )
+        if exit_code != "0":
             return None
+        return password
 
 
 class BackupException(Exception):
