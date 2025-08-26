@@ -650,7 +650,6 @@ def create_logs_section():
         "password",
         "passphrase",
         "secret",
-        "key",
         "token",
     ]
 
