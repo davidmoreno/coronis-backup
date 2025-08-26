@@ -84,6 +84,7 @@ EMAIL_STYLES = {
     "table_header": "background: #2185d0; color: white;",
     "table_cell": "border: 1px solid #2185d0; padding: 5px;",
     "success_cell": "background: #21ba45;",
+    "warning_cell": "background: #f2784b;",
     "error_cell": "background: #db2828;",
     "logs_container": "margin-top: 20px;",
     "logs_header": "color: #2185d0;",
@@ -720,6 +721,9 @@ def html_table_for_host(host: str, stats: dict) -> tuple[BackupResult, str]:
         table += f"<td style='{EMAIL_STYLES['table_cell']}'>{path}</td>"
         if stats["result"] == "OK":
             table += f"<td style='{EMAIL_STYLES['table_cell']} {EMAIL_STYLES['success_cell']}'>{stats['result']}</td>"
+        elif stats["result"].startswith("WARN"):
+            table += f"<td style='{EMAIL_STYLES['table_cell']} {EMAIL_STYLES['warning_cell']}'>{stats['result']}</td>"
+            all_ok.update(stats["result"])
         else:
             table += f"<td style='{EMAIL_STYLES['table_cell']} {EMAIL_STYLES['error_cell']}'>{stats['result']}</td>"
             all_ok.update(stats["result"])
