@@ -104,6 +104,27 @@ SSH_ARGS = [
 ]
 
 
+class BackupResult:
+    OK = "OK"
+    WARN = "WARN"
+    NOK = "NOK"
+
+    value = OK
+
+    def update(self, result: str):
+        """
+        Only updates to worse results.
+        """
+        if str(result).startswith("WARN"):
+            if self.value == "OK":
+                self.value = self.WARN
+        if str(result).startswith("NOK"):
+            self.value = self.NOK
+
+    def __str__(self):
+        return self.value
+
+
 class Backup:
     options: dict
     plan: dict
@@ -403,7 +424,7 @@ class BackupServer:
                 **stats,
                 "size": stats["deduplicated_size"],
                 "type": "path",
-                "result": "OK" if exit_code == "0" else "NOK_EXIT",
+                "result": "OK" if exit_code == "0" else "WARN_EXIT",
             }
         except BackupException as exc:
             if "already exists" in str(exc):
@@ -457,7 +478,7 @@ class BackupServer:
             "uncompressed_size": int_size,
             "compressed_size": int_size,
             "deduplicated_size": 0,
-            "result": "OK" if exit_code == "0" else "NOK_EXIT",
+            "result": "OK" if exit_code == "0" else "WARN_EXIT",
             "size": int_size,
         }
 
@@ -577,9 +598,8 @@ def email_stats(
     htmld = f"<div>Total time: {total_time}</div>{htmld}"
 
     date = datetime.date.today()
-    all_ok_str = "Ok" if all_ok else "Error"
     backupname = os.path.basename(backupname)[:-5]
-    title = f"{all_ok_str} backup {backupname} {date}"
+    title = f"{all_ok} backup {backupname} {date}"
 
     store_local_file = True
     if store_local_file:
@@ -599,10 +619,8 @@ def email_stats(
             )
 
 
-def send_email_to(*, smtp, title, htmld, mailto, all_ok):
-    logging.info(
-        "Send email statistics to %s: %s" % (mailto, "OK" if all_ok else "ERROR")
-    )
+def send_email_to(*, smtp, title, htmld, mailto, all_ok: BackupResult):
+    logging.info("Send email statistics to %s: %s" % (mailto, all_ok))
     server = smtplib.SMTP(smtp.get("hostname", "localhost"), smtp.get("port", 587))
     if smtp.get("tls", True):
         server.starttls()
@@ -657,17 +675,17 @@ def create_logs_section():
     return logs_html
 
 
-def create_stats_table(stats):
+def create_stats_table(stats) -> tuple[BackupResult, str]:
     """Creates the HTML table with backup statistics."""
     table = f"<table style='{EMAIL_STYLES['table']}'><thead>"
     table += f"<tr style='{EMAIL_STYLES['table_header']}'><th>Host</th><th>Area</th>"
     table += "<th>Item</th><th>Result</th><th>Size</th></tr>"
     table += "</thead>\n"
 
-    all_ok = True
+    all_ok = BackupResult()
     for host, host_stats in stats.items():
         all_ok2, ntable = html_table_for_host(host, host_stats)
-        all_ok = all_ok and all_ok2
+        all_ok.update(all_ok2)
         table += ntable
 
     table += "</table>"
@@ -679,7 +697,7 @@ def create_email_header():
     return f"<div style='{EMAIL_STYLES['header']}'>Backup results at {datetime.datetime.now()}</div>"
 
 
-def html_table_for_all_hosts(stats):
+def html_table_for_all_hosts(stats) -> tuple[BackupResult, str]:
     """Main function to generate the complete HTML email content."""
     all_ok, table = create_stats_table(stats)
 
@@ -692,8 +710,8 @@ def html_table_for_all_hosts(stats):
     return all_ok, htmld
 
 
-def html_table_for_host(host: str, stats: dict):
-    all_ok = True
+def html_table_for_host(host: str, stats: dict) -> tuple[BackupResult, str]:
+    all_ok = BackupResult()
     table = ""
     for path, stats in stats.items():
         table += f"<tr style='{EMAIL_STYLES['table_cell']}'>"
@@ -704,7 +722,7 @@ def html_table_for_host(host: str, stats: dict):
             table += f"<td style='{EMAIL_STYLES['table_cell']} {EMAIL_STYLES['success_cell']}'>{stats['result']}</td>"
         else:
             table += f"<td style='{EMAIL_STYLES['table_cell']} {EMAIL_STYLES['error_cell']}'>{stats['result']}</td>"
-            all_ok = False
+            all_ok.update(stats["result"])
         if "size" in stats and stats["size"] is not None:
             table += f"<td style='{EMAIL_STYLES['table_cell']}'>{pretty_size(stats['size'])}</td>"
         table += "</tr>\n"
